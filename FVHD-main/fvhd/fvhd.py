@@ -180,7 +180,7 @@ class FVHD:
             f_nn = nn_attraction * nn_diffs
         else:
             f_nn = nn_diffs
-        f_rn = 1.0 / (1.0 + rn_dist.pow(2)) * rn_diffs
+        f_rn = (rn_dist - 1) / (rn_dist + 1e-8) * rn_diffs
 
         minus_f_nn = torch.zeros_like(f_nn).scatter_add_(src=f_nn, dim=0, index=NN_new)
         minus_f_rn = torch.zeros_like(f_rn).scatter_add_(src=f_rn, dim=0, index=RN_new)
