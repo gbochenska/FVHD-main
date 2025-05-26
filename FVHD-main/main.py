@@ -85,12 +85,13 @@ if __name__ == "__main__":
         eta=0.2,
         optimizer=None,
         optimizer_kwargs={"lr": 0.1},
-        epochs=2000,
+        epochs=1000,
         device="cpu",
         velocity_limit=True,
         autoadapt=True,
-        mutual_neighbors_epochs=300
+        mutual_neighbors_epochs=100
     )
+    # print(fvhd.eta_schedule)
 
     embeddings = fvhd.fit_transform(X, [graph, mutual_graph])
     visualize_embeddings(embeddings, Y, DATASET_NAME)
