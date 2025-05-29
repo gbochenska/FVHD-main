@@ -178,9 +178,8 @@ class FVHD:
                 self.eta = max(self.eta * self.eta_decay_rate, self.eta_min)
             self._previous_delta_norm = delta_norm
 
-        eta_used = self.eta * 5 if self._current_epoch < 100 and self.boost_start_eta else self.eta
-        self.x += eta_used * self.delta_x
-        self.delta_x *= 0.9
+        self.x += self.eta * self.delta_x
+        
 
 
         if self.autoadapt:
@@ -205,15 +204,20 @@ class FVHD:
             self.eta = 0.01
 
     def __compute_forces(self, rn_dist, nn_diffs, rn_diffs, nn_dist, NN_new, RN_new):
-        nn_dist = nn_dist.view(nn_diffs.shape[0], nn_diffs.shape[1])
-
         if self.gaussian_weights:
             sigma = 2.0 * torch.mean(nn_dist)
             weights = torch.exp(- (nn_dist ** 2) / (sigma ** 2))
             weights = weights.unsqueeze(-1)
             f_nn = weights * nn_diffs
+
+        if self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
+                                     
+            nn_attraction = 1.0 / (nn_dist + 1e-8)
+                                                                              
+            f_nn = nn_attraction * nn_diffs
         else:
             f_nn = nn_diffs
+
         f_rn = (rn_dist - 1) / (rn_dist + 1e-8) * rn_diffs
 
         minus_f_nn = torch.zeros_like(f_nn).scatter_add_(src=f_nn, dim=0, index=NN_new)
@@ -221,6 +225,8 @@ class FVHD:
 
         f_nn -= minus_f_nn
         f_rn -= minus_f_rn
+
         f_nn = torch.sum(f_nn, dim=1, keepdim=True)
         f_rn = torch.sum(f_rn, dim=1, keepdim=True)
+
         return f_nn, f_rn
