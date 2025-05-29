@@ -21,9 +21,9 @@ class FVHD:
         eta: float = 0.1,
         device: str = "cpu",
         graph_file: str = "",
-        autoadapt: bool = False,
-        velocity_limit: bool = False,
-        verbose: bool = True,
+        autoadapt=False,
+        velocity_limit=False,
+        verbose=True,
         mutual_neighbors_epochs: Optional[int] = None,
         eta_schedule: str = "",  # "decay" | "adaptive" | ""
         boost_start_eta: bool = True,
@@ -96,6 +96,7 @@ class FVHD:
                 print(f"\r{i} loss: {loss.item()}, X: {self.x[0]}", end="")
                 if i % 100 == 0:
                     print()
+
         return self.x[:, 0].detach().cpu().numpy()
 
     def _calculate_distances(self, indices):
@@ -147,9 +148,6 @@ class FVHD:
         return self.x[:, 0].cpu().numpy()
 
     def __force_directed_step(self, NN, RN, NN_new, RN_new, graphs):
-        if self._current_epoch % 100 == 0 and self._current_epoch > 0:
-            self.eta = max(self.eta * 0.9, 1e-4)
-
         if self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
             graph = graphs[1]
             NN = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32)).to(self.device).reshape(-1)
@@ -158,15 +156,19 @@ class FVHD:
 
         nn_diffs, nn_dist = self._calculate_distances(NN)
         rn_diffs, rn_dist = self._calculate_distances(RN)
+
         f_nn, f_rn = self.__compute_forces(rn_dist, nn_diffs, rn_diffs, nn_dist, NN_new, RN_new)
 
         f = -self.force_multiplier * f_nn - self.c * f_rn
         self.delta_x = self.a * self.delta_x + self.b * f
+        squared_velocity = torch.sum(self.delta_x * self.delta_x, dim=-1)
+        velocity = torch.sqrt(squared_velocity)
 
-        velocity = torch.sqrt(torch.sum(self.delta_x ** 2, dim=-1))
         if self.velocity_limit:
-            mask = velocity > self.max_velocity
-            self.delta_x[mask] *= (self.max_velocity / velocity[mask]).reshape(-1, 1)
+            self.delta_x[squared_velocity > self.max_velocity ** 2] *= (
+                    self.max_velocity
+                    / velocity[squared_velocity > self.max_velocity ** 2]
+            ).reshape(-1, 1)
 
         if self.eta_schedule == "decay":
             self.eta = max(self.eta * self.eta_decay_rate, self.eta_min)
@@ -180,8 +182,10 @@ class FVHD:
         self.x += eta_used * self.delta_x
         self.delta_x *= 0.9
 
+
         if self.autoadapt:
             self._auto_adaptation(velocity)
+
         if self.velocity_limit:
             self.delta_x *= self.vel_dump
 
@@ -210,7 +214,6 @@ class FVHD:
             f_nn = weights * nn_diffs
         else:
             f_nn = nn_diffs
-
         f_rn = (rn_dist - 1) / (rn_dist + 1e-8) * rn_diffs
 
         minus_f_nn = torch.zeros_like(f_nn).scatter_add_(src=f_nn, dim=0, index=NN_new)
@@ -218,8 +221,6 @@ class FVHD:
 
         f_nn -= minus_f_nn
         f_rn -= minus_f_rn
-
         f_nn = torch.sum(f_nn, dim=1, keepdim=True)
         f_rn = torch.sum(f_rn, dim=1, keepdim=True)
-
         return f_nn, f_rn
