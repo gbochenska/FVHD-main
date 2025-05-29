@@ -1,4 +1,3 @@
-
 from typing import Any, Dict, Optional, Type
 
 import numpy as np
@@ -22,10 +21,15 @@ class FVHD:
         eta: float = 0.1,
         device: str = "cpu",
         graph_file: str = "",
-        autoadapt=False,
-        velocity_limit=False,
-        verbose=True,
+        autoadapt: bool = False,
+        velocity_limit: bool = False,
+        verbose: bool = True,
         mutual_neighbors_epochs: Optional[int] = None,
+        eta_schedule: str = "",  # "decay" | "adaptive" | ""
+        boost_start_eta: bool = True,
+        gaussian_weights: bool = False,
+        force_multiplier: float = 1.0,
+        plot_each: int = 0,  # co ile epok zapisywać wykres (0 = nigdy)
     ) -> None:
         self.n_components = n_components
         self.nn = nn
@@ -35,8 +39,8 @@ class FVHD:
         self.optimizer_kwargs = optimizer_kwargs
         self.epochs = epochs
         self.eta = eta
-        self.eta_schedule = ""
         self.initial_eta = eta
+        self.eta_schedule = eta_schedule
         self.eta_decay_rate = 0.95
         self.eta_adaptive_threshold = 1e-3
         self.eta_min = 1e-4
@@ -59,13 +63,17 @@ class FVHD:
         self.delta_x = None
         self.mutual_neighbors_epochs = mutual_neighbors_epochs
 
+        self.boost_start_eta = boost_start_eta
+        self.gaussian_weights = gaussian_weights
+        self.force_multiplier = force_multiplier
+        self.plot_each = plot_each
+
     def fit_transform(self, X: torch.Tensor, graphs: list[Graph]) -> np.ndarray:
         x = X.to(self.device)
         graph = graphs[0]
-        nn = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32))
-        nn = nn.to(self.device)
+        nn = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32), device=self.device)
         n = x.shape[0]
-        rn = torch.randint(0, n, (n, self.rn)).to(self.device)
+        rn = torch.randint(0, n, (n, self.rn), device=self.device)
         nn = nn.reshape(-1)
         rn = rn.reshape(-1)
 
@@ -89,14 +97,14 @@ class FVHD:
 
     def _calculate_distances(self, indices):
         diffs = self.x - torch.index_select(self.x, 0, indices).view(self.x.shape[0], -1, self.n_components)
-        dist = torch.sqrt(torch.sum((diffs + 1e-8) * (diffs + 1e-8), dim=-1, keepdim=True))
+        dist = torch.sqrt(torch.sum((diffs + 1e-8) ** 2, dim=-1, keepdim=True))
         return diffs, dist
 
     def optimizer_step(self, optimizer, NN, RN) -> Tensor:
         optimizer.zero_grad()
         nn_diffs, nn_dist = self._calculate_distances(NN)
         rn_diffs, rn_dist = self._calculate_distances(RN)
-        loss = torch.mean(nn_dist * nn_dist) + self.c * torch.mean((1 - rn_dist) * (1 - rn_dist))
+        loss = torch.mean(nn_dist ** 2) + self.c * torch.mean((1 - rn_dist) ** 2)
         loss.backward()
         optimizer.step()
         return loss
@@ -110,13 +118,8 @@ class FVHD:
             plt.savefig(f"embedding_epoch_{epoch:03}.png")
             plt.close()
 
-        nn_new = NN.reshape(X.shape[0], self.nn, 1)
-        nn_new = [nn_new for _ in range(self.n_components)]
-        nn_new = torch.cat(nn_new, dim=-1).to(torch.long)
-
-        rn_new = RN.reshape(X.shape[0], self.rn, 1)
-        rn_new = [rn_new for _ in range(self.n_components)]
-        rn_new = torch.cat(rn_new, dim=-1).to(torch.long)
+        nn_new = torch.cat([NN.reshape(X.shape[0], self.nn, 1) for _ in range(self.n_components)], dim=-1).long()
+        rn_new = torch.cat([RN.reshape(X.shape[0], self.rn, 1) for _ in range(self.n_components)], dim=-1).long()
 
         if self.x is None:
             self.x = torch.rand((X.shape[0], 1, self.n_components), device=self.device)
@@ -128,37 +131,31 @@ class FVHD:
             loss = self.__force_directed_step(NN, RN, nn_new, rn_new, graphs)
             if self.verbose and i % 100 == 0:
                 print(f"\r{i} loss: {loss.item()}")
+            if self.plot_each > 0 and i % self.plot_each == 0:
                 plot_embedding(self.x[:, 0].detach().cpu().numpy(), i)
 
         return self.x[:, 0].cpu().numpy()
 
     def __force_directed_step(self, NN, RN, NN_new, RN_new, graphs):
-        decay_every = 100
-        decay_rate = 0.9
-        if self._current_epoch % decay_every == 0 and self._current_epoch > 0:
-            self.eta = max(self.eta * decay_rate, 1e-4)
+        if self._current_epoch % 100 == 0 and self._current_epoch > 0:
+            self.eta = max(self.eta * 0.9, 1e-4)
 
         if self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
             graph = graphs[1]
             NN = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32)).to(self.device).reshape(-1)
-            NN_new = NN.reshape(self.x.shape[0], self.nn, 1)
-            NN_new = torch.cat([NN_new for _ in range(self.n_components)], dim=-1).to(torch.long)
+            NN_new = torch.cat([NN.reshape(self.x.shape[0], self.nn, 1) for _ in range(self.n_components)], dim=-1)
 
         nn_diffs, nn_dist = self._calculate_distances(NN)
         rn_diffs, rn_dist = self._calculate_distances(RN)
-
         f_nn, f_rn = self.__compute_forces(rn_dist, nn_diffs, rn_diffs, nn_dist, NN_new, RN_new)
 
-        f = -1.5 * f_nn - self.c * f_rn
+        f = -self.force_multiplier * f_nn - self.c * f_rn
         self.delta_x = self.a * self.delta_x + self.b * f
 
-        squared_velocity = torch.sum(self.delta_x * self.delta_x, dim=-1)
-        sqrt_velocity = torch.sqrt(squared_velocity)
-
+        velocity = torch.sqrt(torch.sum(self.delta_x ** 2, dim=-1))
         if self.velocity_limit:
-            self.delta_x[squared_velocity > self.max_velocity ** 2] *= (
-                self.max_velocity / sqrt_velocity[squared_velocity > self.max_velocity ** 2]
-            ).reshape(-1, 1)
+            mask = velocity > self.max_velocity
+            self.delta_x[mask] *= (self.max_velocity / velocity[mask]).reshape(-1, 1)
 
         if self.eta_schedule == "decay":
             self.eta = max(self.eta * self.eta_decay_rate, self.eta_min)
@@ -168,22 +165,16 @@ class FVHD:
                 self.eta = max(self.eta * self.eta_decay_rate, self.eta_min)
             self._previous_delta_norm = delta_norm
 
-        if self._current_epoch < 100:
-            eta_used = self.eta * 5
-        else:
-            eta_used = self.eta
-
+        eta_used = self.eta * 5 if self._current_epoch < 100 and self.boost_start_eta else self.eta
         self.x += eta_used * self.delta_x
         self.delta_x *= 0.9
 
         if self.autoadapt:
-            self._auto_adaptation(sqrt_velocity)
-
+            self._auto_adaptation(velocity)
         if self.velocity_limit:
             self.delta_x *= self.vel_dump
 
-        loss = torch.mean(nn_dist ** 2) + self.c * torch.mean((1 - rn_dist) ** 2)
-        return loss
+        return torch.mean(nn_dist ** 2) + self.c * torch.mean((1 - rn_dist) ** 2)
 
     def _auto_adaptation(self, sqrt_velocity):
         v_avg = self.delta_x.mean()
@@ -199,15 +190,14 @@ class FVHD:
 
     def __compute_forces(self, rn_dist, nn_diffs, rn_diffs, nn_dist, NN_new, RN_new):
         nn_dist = nn_dist.view(nn_diffs.shape[0], nn_diffs.shape[1])
-        if self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
-            nn_attraction = 1.0 / (nn_dist + 1e-8)
-            nn_attraction = nn_attraction.unsqueeze(-1)
-            f_nn = nn_attraction * nn_diffs
-        else:
+
+        if self.gaussian_weights:
             sigma = 2.0 * torch.mean(nn_dist)
             weights = torch.exp(- (nn_dist ** 2) / (sigma ** 2))
             weights = weights.unsqueeze(-1)
             f_nn = weights * nn_diffs
+        else:
+            f_nn = nn_diffs / (nn_dist.unsqueeze(-1) + 1e-8)
 
         f_rn = (rn_dist - 1) / (rn_dist + 1e-8) * rn_diffs
 
@@ -217,7 +207,4 @@ class FVHD:
         f_nn -= minus_f_nn
         f_rn -= minus_f_rn
 
-        f_nn = torch.sum(f_nn, dim=1, keepdim=True)
-        f_rn = torch.sum(f_rn, dim=1, keepdim=True)
-
-        return f_nn, f_rn
+        return torch.sum(f_nn, dim=1, keepdim=True), torch.sum(f_rn, dim=1, keepdim=True)

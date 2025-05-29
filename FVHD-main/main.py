@@ -9,6 +9,7 @@ import torchvision
 
 from fvhd import FVHD
 from knn import Graph, NeighborConfig, NeighborGenerator
+from sklearn.metrics import silhouette_score
 
 
 def setup_ssl():
@@ -85,13 +86,16 @@ if __name__ == "__main__":
         eta=0.2,
         optimizer=None,
         optimizer_kwargs={"lr": 0.1},
-        epochs=1000,
+        epochs=2000,
         device="cpu",
         velocity_limit=True,
         autoadapt=True,
-        mutual_neighbors_epochs=100
+        mutual_neighbors_epochs=300
     )
+
     # print(fvhd.eta_schedule)
 
     embeddings = fvhd.fit_transform(X, [graph, mutual_graph])
+    score = silhouette_score(embeddings, Y)
+    print(f"Silhouette Score: {score:.4f}")
     visualize_embeddings(embeddings, Y, DATASET_NAME)
