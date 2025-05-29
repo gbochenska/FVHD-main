@@ -57,7 +57,7 @@ class FVHD:
         self.curr_max_velo = torch.tensor(([0.0] * self.buffer_len))
         self.curr_max_velo_idx = 1
         self.velocity_limit = velocity_limit
-        self.max_velocity = 0.05
+        self.max_velocity = 1.0
         self.vel_dump = 0.95
         self.x = None
         self.delta_x = None
@@ -71,7 +71,8 @@ class FVHD:
     def fit_transform(self, X: torch.Tensor, graphs: list[Graph]) -> np.ndarray:
         x = X.to(self.device)
         graph = graphs[0]
-        nn = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32), device=self.device)
+        nn = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32))
+        nn = nn.to(self.device)
         n = x.shape[0]
         rn = torch.randint(0, n, (n, self.rn), device=self.device)
         nn = nn.reshape(-1)
@@ -83,7 +84,9 @@ class FVHD:
 
     def optimizer_method(self, N, NN, RN):
         if self.x is None:
-            self.x = torch.rand((N, 1, self.n_components), requires_grad=True, device=self.device)
+            self.x = torch.rand(
+                (N, 1, self.n_components), requires_grad=True, device=self.device
+            )
         optimizer = self.optimizer(params={self.x}, **self.optimizer_kwargs)
         for i in range(self.epochs):
             loss = self.optimizer_step(optimizer, NN, RN)
@@ -96,15 +99,22 @@ class FVHD:
         return self.x[:, 0].detach().cpu().numpy()
 
     def _calculate_distances(self, indices):
-        diffs = self.x - torch.index_select(self.x, 0, indices).view(self.x.shape[0], -1, self.n_components)
-        dist = torch.sqrt(torch.sum((diffs + 1e-8) ** 2, dim=-1, keepdim=True))
+        diffs = self.x - torch.index_select(self.x, 0, indices).view(
+            self.x.shape[0], -1, self.n_components
+        )
+        dist = torch.sqrt(
+            torch.sum((diffs + 1e-8) * (diffs + 1e-8), dim=-1, keepdim=True)
+        )
         return diffs, dist
 
     def optimizer_step(self, optimizer, NN, RN) -> Tensor:
         optimizer.zero_grad()
         nn_diffs, nn_dist = self._calculate_distances(NN)
         rn_diffs, rn_dist = self._calculate_distances(RN)
-        loss = torch.mean(nn_dist ** 2) + self.c * torch.mean((1 - rn_dist) ** 2)
+
+        loss = torch.mean(nn_dist * nn_dist) + self.c * torch.mean(
+            (1 - rn_dist) * (1 - rn_dist)
+        )
         loss.backward()
         optimizer.step()
         return loss
@@ -118,8 +128,8 @@ class FVHD:
             plt.savefig(f"embedding_epoch_{epoch:03}.png")
             plt.close()
 
-        nn_new = torch.cat([NN.reshape(X.shape[0], self.nn, 1) for _ in range(self.n_components)], dim=-1).long()
-        rn_new = torch.cat([RN.reshape(X.shape[0], self.rn, 1) for _ in range(self.n_components)], dim=-1).long()
+        nn_new = torch.cat([NN.reshape(X.shape[0], self.nn, 1) for _ in range(self.n_components)], dim=-1).to(torch.long)
+        rn_new = torch.cat([RN.reshape(X.shape[0], self.rn, 1) for _ in range(self.n_components)], dim=-1).to(torch.long)
 
         if self.x is None:
             self.x = torch.rand((X.shape[0], 1, self.n_components), device=self.device)
@@ -143,7 +153,8 @@ class FVHD:
         if self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
             graph = graphs[1]
             NN = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32)).to(self.device).reshape(-1)
-            NN_new = torch.cat([NN.reshape(self.x.shape[0], self.nn, 1) for _ in range(self.n_components)], dim=-1)
+            NN_new = NN.reshape(self.x.shape[0], self.nn, 1)
+            NN_new = torch.cat([NN_new for _ in range(self.n_components)], dim=-1).to(torch.long)
 
         nn_diffs, nn_dist = self._calculate_distances(NN)
         rn_diffs, rn_dist = self._calculate_distances(RN)
@@ -174,7 +185,8 @@ class FVHD:
         if self.velocity_limit:
             self.delta_x *= self.vel_dump
 
-        return torch.mean(nn_dist ** 2) + self.c * torch.mean((1 - rn_dist) ** 2)
+        loss = torch.mean(nn_dist ** 2) + self.c * torch.mean((1 - rn_dist) ** 2)
+        return loss
 
     def _auto_adaptation(self, sqrt_velocity):
         v_avg = self.delta_x.mean()
@@ -197,7 +209,7 @@ class FVHD:
             weights = weights.unsqueeze(-1)
             f_nn = weights * nn_diffs
         else:
-            f_nn = nn_diffs / (nn_dist.unsqueeze(-1) + 1e-8)
+            f_nn = nn_diffs
 
         f_rn = (rn_dist - 1) / (rn_dist + 1e-8) * rn_diffs
 
@@ -207,4 +219,7 @@ class FVHD:
         f_nn -= minus_f_nn
         f_rn -= minus_f_rn
 
-        return torch.sum(f_nn, dim=1, keepdim=True), torch.sum(f_rn, dim=1, keepdim=True)
+        f_nn = torch.sum(f_nn, dim=1, keepdim=True)
+        f_rn = torch.sum(f_rn, dim=1, keepdim=True)
+
+        return f_nn, f_rn
