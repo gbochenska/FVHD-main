@@ -74,7 +74,7 @@ class FVHD:
         nn = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32))
         nn = nn.to(self.device)
         n = x.shape[0]
-        rn = torch.randint(0, n, (n, self.rn), device=self.device)
+        rn = torch.randint(0, n, (n, self.rn)).to(self.device)
         nn = nn.reshape(-1)
         rn = rn.reshape(-1)
 
@@ -179,8 +179,6 @@ class FVHD:
             self._previous_delta_norm = delta_norm
 
         self.x += self.eta * self.delta_x
-        
-
 
         if self.autoadapt:
             self._auto_adaptation(velocity)
@@ -211,13 +209,10 @@ class FVHD:
             f_nn = weights * nn_diffs
 
         if self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
-                                     
             nn_attraction = 1.0 / (nn_dist + 1e-8)
-                                                                              
             f_nn = nn_attraction * nn_diffs
         else:
             f_nn = nn_diffs
-
         f_rn = (rn_dist - 1) / (rn_dist + 1e-8) * rn_diffs
 
         minus_f_nn = torch.zeros_like(f_nn).scatter_add_(src=f_nn, dim=0, index=NN_new)
@@ -225,8 +220,6 @@ class FVHD:
 
         f_nn -= minus_f_nn
         f_rn -= minus_f_rn
-
         f_nn = torch.sum(f_nn, dim=1, keepdim=True)
         f_rn = torch.sum(f_rn, dim=1, keepdim=True)
-
         return f_nn, f_rn
