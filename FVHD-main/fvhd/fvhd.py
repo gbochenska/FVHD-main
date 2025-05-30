@@ -30,6 +30,8 @@ class FVHD:
         gaussian_weights: bool = False,
         force_multiplier: float = 1.0,
         plot_each: int = 0,  # co ile epok zapisywać wykres (0 = nigdy)
+        init_pos: Optional[torch.Tensor] = None,
+        centroids_2d: Optional[torch.Tensor] = None
     ) -> None:
         self.n_components = n_components
         self.nn = nn
@@ -67,9 +69,42 @@ class FVHD:
         self.gaussian_weights = gaussian_weights
         self.force_multiplier = force_multiplier
         self.plot_each = plot_each
+        self.init_pos = init_pos
+        self.centroids_2d = centroids_2d
 
-    def fit_transform(self, X: torch.Tensor, graphs: list[Graph]) -> np.ndarray:
-        x = X.to(self.device)
+    def fit_transform(self, X: torch.Tensor, graphs: list[Graph], labels: Optional[np.ndarray] = None) -> np.ndarray:
+        if labels is not None:
+            from sklearn.decomposition import PCA
+            import numpy as np
+
+            # 1. Najpierw redukujemy wszystkie dane do 2D
+            pca = PCA(n_components=self.n_components)
+            X_2d = pca.fit_transform(X.cpu().numpy())
+
+            # 2. Potem liczymy centroidy w przestrzeni 2D
+            labels_np = np.array(labels)
+            n_classes = len(np.unique(labels_np))
+            centroids = []
+
+            for label in np.unique(labels_np):
+                class_points = X_2d[labels_np == label]
+                centroid = np.mean(class_points, axis=0)
+                centroids.append(centroid)
+
+            centroids_2d = np.vstack(centroids)
+            self.centroids_2d = centroids_2d
+
+            # 3. Każdy punkt przypisany do centroidu swojej klasy + noise
+            label_tensor = torch.tensor(labels_np, device=self.device)
+            centroid_positions = torch.tensor(centroids_2d[label_tensor], dtype=torch.float32, device=self.device)
+
+            noise = torch.randn((X.shape[0], self.n_components), device=self.device) * 0.01
+            x = centroid_positions + noise
+
+        else:
+            x = X.to(self.device)
+
+
         graph = graphs[0]
         nn = torch.tensor(graph.indexes[:, : self.nn].astype(np.int32))
         nn = nn.to(self.device)
@@ -133,7 +168,11 @@ class FVHD:
         rn_new = torch.cat([RN.reshape(X.shape[0], self.rn, 1) for _ in range(self.n_components)], dim=-1).to(torch.long)
 
         if self.x is None:
-            self.x = torch.rand((X.shape[0], 1, self.n_components), device=self.device)
+            if self.init_pos is not None:
+                self.x = self.init_pos.to(self.device)
+            else:
+                self.x = torch.rand((X.shape[0], 1, self.n_components), device=self.device)
+
         if self.delta_x is None:
             self.delta_x = torch.zeros_like(self.x)
 
@@ -205,10 +244,10 @@ class FVHD:
         if self.gaussian_weights:
             sigma = 2.0 * torch.mean(nn_dist)
             weights = torch.exp(- (nn_dist ** 2) / (sigma ** 2))
-            weights = weights.unsqueeze(-1)
+            weights = weights.view(nn_diffs.shape[0], nn_diffs.shape[1], 1)
             f_nn = weights * nn_diffs
 
-        if self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
+        elif self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
             nn_attraction = 1.0 / (nn_dist + 1e-8)
             f_nn = nn_attraction * nn_diffs
         else:

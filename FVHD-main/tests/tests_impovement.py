@@ -11,7 +11,6 @@ import pandas as pd
 from knn import Graph, NeighborConfig, NeighborGenerator
 
 from fvhd import FVHD
-from knn.graph import Graph
 from sklearn.metrics import silhouette_score
 
 

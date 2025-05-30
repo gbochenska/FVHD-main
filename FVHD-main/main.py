@@ -61,7 +61,7 @@ def visualize_embeddings(x: np.ndarray, y: torch.Tensor, dataset_name: str):
     plt.title(f"{dataset_name} 2d visualization")
 
     y = y.numpy()
-    for i in range(20):
+    for i in range(10):
         points = x[y == i]
         plt.scatter(
             points[:, 0], points[:, 1], label=f"{i}", marker=".", s=1, alpha=0.5
@@ -95,7 +95,24 @@ if __name__ == "__main__":
 
     # print(fvhd.eta_schedule)
 
-    embeddings = fvhd.fit_transform(X, [graph, mutual_graph])
+    embeddings = fvhd.fit_transform(X, [graph, mutual_graph], labels=Y)
+    centroids_2d = fvhd.centroids_2d
     score = silhouette_score(embeddings, Y)
     print(f"Silhouette Score: {score:.4f}")
     visualize_embeddings(embeddings, Y, DATASET_NAME)
+
+
+    plt.figure(figsize=(8, 8))
+    Y = Y.numpy()
+    for i in range(10):
+        points = embeddings[Y == i]
+        plt.scatter(points[:, 0], points[:, 1], label=f"{i}", marker=".", s=1, alpha=0.5)
+    
+    # Dorysowanie centroidów
+    for idx, (x, y) in enumerate(centroids_2d):  # centroidy w 2D
+        plt.scatter(x, y, marker='x', color='black', s=100)  # duży X na centroidzie
+        plt.text(x, y, str(idx), fontsize=12, color='red')  # numer klasy
+
+    plt.legend()
+    plt.title(f"{DATASET_NAME} FVHD Embedding + Centroidy klas")
+    plt.show()
