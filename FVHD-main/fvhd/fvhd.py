@@ -7,6 +7,32 @@ from torch.optim import Optimizer
 
 from knn.graph import Graph
 
+@staticmethod
+def compute_supervised_loss(embeddings, labels):
+    unique_labels = labels.unique()
+    centroids = []
+    for label in unique_labels:
+        class_points = embeddings[labels == label]
+        centroid = class_points.mean(dim=0)
+        centroids.append(centroid)
+    centroids = torch.stack(centroids)
+    
+    intra_loss = torch.mean(
+        torch.stack([
+            torch.mean((embeddings[labels == label] - centroid).pow(2).sum(dim=1))
+            for centroid, label in zip(centroids, unique_labels)
+        ])
+    )
+    
+    if len(centroids) > 1:
+        dists = torch.cdist(centroids, centroids)
+        mask = torch.triu(torch.ones_like(dists), diagonal=1)
+        inter_loss = (dists * mask).sum() / mask.sum()
+    else:
+        inter_loss = torch.tensor(0.0, device=embeddings.device)
+
+    return intra_loss, inter_loss
+
 
 class FVHD:
     def __init__(
@@ -31,7 +57,7 @@ class FVHD:
         force_multiplier: float = 1.0,
         plot_each: int = 0,  # co ile epok zapisywać wykres (0 = nigdy)
         init_pos: Optional[torch.Tensor] = None,
-        centroids_2d: Optional[torch.Tensor] = None
+        supervised=False, lambda1=1.0, lambda2=1.0
     ) -> None:
         self.n_components = n_components
         self.nn = nn
@@ -70,39 +96,13 @@ class FVHD:
         self.force_multiplier = force_multiplier
         self.plot_each = plot_each
         self.init_pos = init_pos
-        self.centroids_2d = centroids_2d
+        self.supervised = supervised
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2
 
     def fit_transform(self, X: torch.Tensor, graphs: list[Graph], labels: Optional[np.ndarray] = None) -> np.ndarray:
-        if labels is not None:
-            from sklearn.decomposition import PCA
-            import numpy as np
-
-            # 1. Najpierw redukujemy wszystkie dane do 2D
-            pca = PCA(n_components=self.n_components)
-            X_2d = pca.fit_transform(X.cpu().numpy())
-
-            # 2. Potem liczymy centroidy w przestrzeni 2D
-            labels_np = np.array(labels)
-            n_classes = len(np.unique(labels_np))
-            centroids = []
-
-            for label in np.unique(labels_np):
-                class_points = X_2d[labels_np == label]
-                centroid = np.mean(class_points, axis=0)
-                centroids.append(centroid)
-
-            centroids_2d = np.vstack(centroids)
-            self.centroids_2d = centroids_2d
-
-            # 3. Każdy punkt przypisany do centroidu swojej klasy + noise
-            label_tensor = torch.tensor(labels_np, device=self.device)
-            centroid_positions = torch.tensor(centroids_2d[label_tensor], dtype=torch.float32, device=self.device)
-
-            noise = torch.randn((X.shape[0], self.n_components), device=self.device) * 0.01
-            x = centroid_positions + noise
-
-        else:
-            x = X.to(self.device)
+        
+        x = X.to(self.device)
 
 
         graph = graphs[0]
@@ -114,7 +114,7 @@ class FVHD:
         rn = rn.reshape(-1)
 
         if self.optimizer is None:
-            return self.force_directed_method(x, nn, rn, graphs)
+            return self.force_directed_method(x, nn, rn, graphs, labels)
         return self.optimizer_method(x.shape[0], nn, rn)
 
     def optimizer_method(self, N, NN, RN):
@@ -155,7 +155,7 @@ class FVHD:
         optimizer.step()
         return loss
 
-    def force_directed_method(self, X: torch.Tensor, NN: torch.Tensor, RN: torch.Tensor, graphs: list[Graph]) -> np.ndarray:
+    def force_directed_method(self, X: torch.Tensor, NN: torch.Tensor, RN: torch.Tensor, graphs: list[Graph], labels = None) -> np.ndarray:
         def plot_embedding(x, epoch):
             import matplotlib.pyplot as plt
             plt.figure(figsize=(6, 6))
@@ -179,6 +179,10 @@ class FVHD:
         for i in range(self.epochs):
             self._current_epoch = i
             loss = self.__force_directed_step(NN, RN, nn_new, rn_new, graphs)
+
+            if self.supervised and labels is not None:
+                intra_loss, inter_loss = self.compute_supervised_loss(self.x, labels)
+                loss = loss + self.lambda1 * intra_loss - self.lambda2 * inter_loss
             if self.verbose and i % 100 == 0:
                 print(f"\r{i} loss: {loss.item()}")
             if self.plot_each > 0 and i % self.plot_each == 0:
