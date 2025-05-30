@@ -7,31 +7,6 @@ from torch.optim import Optimizer
 
 from knn.graph import Graph
 
-@staticmethod
-def compute_supervised_loss(embeddings, labels):
-    unique_labels = labels.unique()
-    centroids = []
-    for label in unique_labels:
-        class_points = embeddings[labels == label]
-        centroid = class_points.mean(dim=0)
-        centroids.append(centroid)
-    centroids = torch.stack(centroids)
-    
-    intra_loss = torch.mean(
-        torch.stack([
-            torch.mean((embeddings[labels == label] - centroid).pow(2).sum(dim=1))
-            for centroid, label in zip(centroids, unique_labels)
-        ])
-    )
-    
-    if len(centroids) > 1:
-        dists = torch.cdist(centroids, centroids)
-        mask = torch.triu(torch.ones_like(dists), diagonal=1)
-        inter_loss = (dists * mask).sum() / mask.sum()
-    else:
-        inter_loss = torch.tensor(0.0, device=embeddings.device)
-
-    return intra_loss, inter_loss
 
 
 class FVHD:
@@ -55,7 +30,7 @@ class FVHD:
         boost_start_eta: bool = True,
         gaussian_weights: bool = False,
         force_multiplier: float = 1.0,
-        plot_each: int = 0,  # co ile epok zapisywać wykres (0 = nigdy)
+        plot_each: int = 100,  # co ile epok zapisywać wykres (0 = nigdy)
         init_pos: Optional[torch.Tensor] = None,
         supervised=False, lambda1=1.0, lambda2=1.0
     ) -> None:
@@ -155,11 +130,44 @@ class FVHD:
         optimizer.step()
         return loss
 
-    def force_directed_method(self, X: torch.Tensor, NN: torch.Tensor, RN: torch.Tensor, graphs: list[Graph], labels = None) -> np.ndarray:
-        def plot_embedding(x, epoch):
+
+    @staticmethod
+    def compute_supervised_loss(embeddings, labels):
+        unique_labels = labels.unique()
+        centroids = []
+        for label in unique_labels:
+            class_points = embeddings[labels == label]
+            centroid = class_points.mean(dim=0)
+            centroids.append(centroid)
+        centroids = torch.stack(centroids)
+        centroids = centroids.view(len(centroids), -1)
+        
+        intra_loss = torch.mean(
+            torch.stack([
+                torch.mean((embeddings[labels == label] - centroid).pow(2).sum(dim=1))
+                for centroid, label in zip(centroids, unique_labels)
+            ])
+        )
+        
+        if len(centroids) > 1:
+            dists = torch.cdist(centroids, centroids)
+            mask = torch.triu(torch.ones_like(dists), diagonal=1)
+            inter_loss = (dists * mask).sum() / mask.sum()
+        else:
+            inter_loss = torch.tensor(0.0, device=embeddings.device)
+
+        return intra_loss, inter_loss
+
+
+    def force_directed_method(self, X: torch.Tensor, NN: torch.Tensor, RN: torch.Tensor, graphs: list[Graph], labels: Optional[np.ndarray] = None) -> np.ndarray:
+        def plot_embedding(x, labels, epoch):
             import matplotlib.pyplot as plt
             plt.figure(figsize=(6, 6))
-            plt.scatter(x[:, 0], x[:, 1], s=2)
+            labels = labels.numpy()
+            for i in range(10):
+                points = x[labels == i]
+                plt.scatter(points[:, 0], points[:, 1], label=f"{i}", marker=".", s=1, alpha=0.5)
+            plt.legend()
             plt.title(f"Embeddings - Epoch {epoch}")
             plt.savefig(f"embedding_epoch_{epoch:03}.png")
             plt.close()
@@ -186,7 +194,7 @@ class FVHD:
             if self.verbose and i % 100 == 0:
                 print(f"\r{i} loss: {loss.item()}")
             if self.plot_each > 0 and i % self.plot_each == 0:
-                plot_embedding(self.x[:, 0].detach().cpu().numpy(), i)
+                plot_embedding(self.x[:, 0].detach().cpu().numpy(), labels, i)
 
         return self.x[:, 0].cpu().numpy()
 
