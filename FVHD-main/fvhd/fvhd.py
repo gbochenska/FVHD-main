@@ -160,17 +160,43 @@ class FVHD:
 
 
     def force_directed_method(self, X: torch.Tensor, NN: torch.Tensor, RN: torch.Tensor, graphs: list[Graph], labels: Optional[np.ndarray] = None) -> np.ndarray:
-        def plot_embedding(x, labels, epoch):
+        def plot_embedding(x, labels, epoch, prev_centroids=None):
             import matplotlib.pyplot as plt
+            import numpy as np
+
             plt.figure(figsize=(6, 6))
             labels = labels.numpy()
-            for i in range(10):
+            unique_labels = np.unique(labels)
+
+            # Plot embeddings
+            for i in unique_labels:
                 points = x[labels == i]
                 plt.scatter(points[:, 0], points[:, 1], label=f"{i}", marker=".", s=1, alpha=0.5)
+            if self.supervised:
+                # Compute current centroids
+                centroids = []
+                for label in unique_labels:
+                    class_points = x[labels == label]
+                    centroid = np.mean(class_points, axis=0)
+                    centroids.append(centroid)
+                centroids = np.vstack(centroids)
+
+                # Plot previous centroids
+                if prev_centroids is not None:
+                    plt.scatter(prev_centroids[:, 0], prev_centroids[:, 1],
+                                c='black', marker='o', s=100, edgecolors='k', label='Prev Centroids')
+
+                # Plot current centroids
+                plt.scatter(centroids[:, 0], centroids[:, 1],
+                            c='red', marker='X', s=100, label='Current Centroids')
+
             plt.legend()
-            plt.title(f"Embeddings - Epoch {epoch}")
-            plt.savefig(f"embedding_epoch_{epoch:03}.png")
+            plt.title(f"Embeddings and Centroids - Epoch {epoch}")
+            plt.savefig(f"embedding_epoch_{epoch:03}_supervised_{self.supervised}.png")
             plt.close()
+            
+            if self.supervised:
+                return centroids  # <- zwracamy centroidy, by użyć ich w następnej epoce
 
         nn_new = torch.cat([NN.reshape(X.shape[0], self.nn, 1) for _ in range(self.n_components)], dim=-1).to(torch.long)
         rn_new = torch.cat([RN.reshape(X.shape[0], self.rn, 1) for _ in range(self.n_components)], dim=-1).to(torch.long)
@@ -184,6 +210,8 @@ class FVHD:
         if self.delta_x is None:
             self.delta_x = torch.zeros_like(self.x)
 
+        prev_centroids = None  # <- nowa zmienna
+
         for i in range(self.epochs):
             self._current_epoch = i
             loss = self.__force_directed_step(NN, RN, nn_new, rn_new, graphs)
@@ -191,10 +219,14 @@ class FVHD:
             if self.supervised and labels is not None:
                 intra_loss, inter_loss = self.compute_supervised_loss(self.x, labels)
                 loss = loss + self.lambda1 * intra_loss - self.lambda2 * inter_loss
+
             if self.verbose and i % 100 == 0:
                 print(f"\r{i} loss: {loss.item()}")
+
             if self.plot_each > 0 and i % self.plot_each == 0:
-                plot_embedding(self.x[:, 0].detach().cpu().numpy(), labels, i)
+                centroids = plot_embedding(self.x[:, 0].detach().cpu().numpy(), labels, i, prev_centroids)
+                prev_centroids = centroids  # <- zapisujemy obecne centroids na następne epoki
+
 
         return self.x[:, 0].cpu().numpy()
 

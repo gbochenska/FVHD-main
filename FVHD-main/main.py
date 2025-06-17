@@ -32,6 +32,16 @@ def load_dataset(name: str, n_samples: Optional[int] = None):
         dataset = torchvision.datasets.FashionMNIST(
             "fashionMNIST", train=True, download=True
         )
+    elif name == "custom_npz":
+        data = np.load("mnist_1000_distilled_like.npz")
+        X = data["images"]  # shape: (1000, 28, 28)
+        Y = data["labels"]  # shape: (1000,)
+        X = X.reshape(len(X), -1)
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=50)
+        X = torch.tensor(pca.fit_transform(X), dtype=torch.float32)
+        Y = torch.tensor(Y, dtype=torch.long)
+        return X, Y
     else:
         raise ValueError(f"Unsupported dataset: {name}")
 
@@ -73,7 +83,7 @@ def visualize_embeddings(x: np.ndarray, y: torch.Tensor, dataset_name: str):
 if __name__ == "__main__":
     setup_ssl()
 
-    DATASET_NAME = "mnist"
+    DATASET_NAME = "custom_npz"
 
     X, Y = load_dataset(DATASET_NAME)
     graph, mutual_graph = create_or_load_graph(X, 5)
@@ -82,7 +92,7 @@ if __name__ == "__main__":
         n_components=2,
         nn=5,
         rn=2,
-        c=0.2,
+        c=3.5,
         eta=0.2,
         optimizer=None,
         optimizer_kwargs={"lr": 0.1},
@@ -90,13 +100,14 @@ if __name__ == "__main__":
         device="cpu",
         velocity_limit=True,
         autoadapt=True,
-        mutual_neighbors_epochs=300
+        mutual_neighbors_epochs=300,
+        supervised=False
     )
 
     # print(fvhd.eta_schedule)
 
     embeddings = fvhd.fit_transform(X, [graph, mutual_graph], labels=Y)
-    centroids_2d = fvhd.centroids_2d
+
     score = silhouette_score(embeddings, Y)
     print(f"Silhouette Score: {score:.4f}")
     visualize_embeddings(embeddings, Y, DATASET_NAME)
@@ -108,11 +119,6 @@ if __name__ == "__main__":
         points = embeddings[Y == i]
         plt.scatter(points[:, 0], points[:, 1], label=f"{i}", marker=".", s=1, alpha=0.5)
     
-    # Dorysowanie centroidów
-    for idx, (x, y) in enumerate(centroids_2d):  # centroidy w 2D
-        plt.scatter(x, y, marker='x', color='black', s=100)  # duży X na centroidzie
-        plt.text(x, y, str(idx), fontsize=12, color='red')  # numer klasy
-
     plt.legend()
     plt.title(f"{DATASET_NAME} FVHD Embedding + Centroidy klas")
     plt.show()
