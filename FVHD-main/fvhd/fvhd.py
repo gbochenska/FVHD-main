@@ -165,7 +165,7 @@ class FVHD:
             import numpy as np
 
             plt.figure(figsize=(6, 6))
-            labels = labels.numpy()
+            labels = labels.numpy() if labels is not None else np.zeros(len(x), dtype=int)
             unique_labels = np.unique(labels)
 
             # Plot embeddings
