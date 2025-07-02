@@ -146,6 +146,40 @@ class FVHD:
 
         return intra_loss, inter_loss
 
+
+    def apply_supervision(self, labels: torch.Tensor, log: bool = False):
+        """
+        Aktualizuje self.x w nadzorowany sposób.
+        Zwraca krotkę (intra_loss, inter_loss) ‒ możesz jej użyć do logowania.
+        """
+        if labels is None or not self.supervised:
+            return torch.tensor(0.0), torch.tensor(0.0)
+
+        # — oblicz metryki —
+        intra_loss, inter_loss = self.compute_supervised_loss(self.x[:, 0], labels.to(self.device))
+
+        # — przyciąganie + odpychanie —
+        y    = labels.to(self.device)
+        uniq = torch.unique(y)
+        centroids = torch.stack([self.x[y == lbl, 0].mean(dim=0) for lbl in uniq])  # (C,2)
+
+        f_attr = centroids[y] - self.x[:, 0]                                        # (N,2)
+
+        diff  = self.x[:, 0].unsqueeze(1) - centroids.unsqueeze(0)                  # (N,C,2)
+        dist2 = (diff * diff).sum(dim=-1, keepdim=True) + 1e-8
+        mask  = (y.unsqueeze(1) != uniq.unsqueeze(0)).unsqueeze(-1)
+        f_rep = (diff / dist2) * mask.float()
+        f_repel = f_rep.sum(dim=1)                                                  # (N,2)
+
+        step = self.eta * 0.05 * (self.lambda1 * f_attr + self.lambda2 * f_repel)
+        with torch.no_grad():
+            self.x[:, 0] += step
+
+        if log and self.verbose:
+            print(f"intra: {intra_loss.item():.4f}   inter: {inter_loss.item():.4f}")
+
+        return intra_loss, inter_loss
+
     def force_directed_method(self, X, NN, RN, graphs, labels=None) -> np.ndarray:
         def plot_embedding(x, labels, epoch, prev_centroids=None):
             import matplotlib.pyplot as plt
@@ -187,17 +221,13 @@ class FVHD:
 
         for i in range(self.epochs):
             self._current_epoch = i
-            loss = self.__force_directed_step(NN, RN, nn_new, rn_new, graphs)
+            
 
             if self.supervised and labels is not None:
-                intra_loss, inter_loss = self.compute_supervised_loss(self.x[:, 0], labels.to(self.device))
-                loss = loss + self.lambda1 * intra_loss - self.lambda2 * inter_loss
-
-                with torch.no_grad():
-                    y = labels.to(self.device)
-                    centroids = torch.stack([self.x[y == lbl, 0].mean(dim=0) for lbl in torch.unique(y)])
-                    target = centroids[y]
-                    self.x[:, 0] += 0.05 * (target - self.x[:, 0])
+                intra_loss, inter_loss = self.apply_supervision(labels, log=(i % 100 == 0))
+                loss = self.lambda1 * intra_loss - self.lambda2 * inter_loss
+            else:
+                loss = self.__force_directed_step(NN, RN, nn_new, rn_new, graphs)
 
             if self.verbose and i % 100 == 0:
                 print(f"\r{i} loss: {loss.item()}")
