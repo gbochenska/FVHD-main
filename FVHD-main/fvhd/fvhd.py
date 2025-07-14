@@ -106,9 +106,9 @@ class FVHD:
         return self.x[:, 0].detach().cpu().numpy()
 
     def _calculate_distances(self, indices):
-        diffs = self.x - torch.index_select(self.x, 0, indices).view(
-            self.x.shape[0], -1, self.n_components
-        )
+        flat_indices = indices.view(-1)
+        selected = torch.index_select(self.x, 0, flat_indices)
+        diffs = self.x - selected.view(self.x.shape[0], -1, self.n_components)
         dist = torch.sqrt(
             torch.sum((diffs + 1e-8) * (diffs + 1e-8), dim=-1, keepdim=True)
         )
@@ -311,3 +311,4 @@ class FVHD:
             torch.sum(f_nn, dim=1, keepdim=True),
             torch.sum(f_rn, dim=1, keepdim=True),
         )
+
