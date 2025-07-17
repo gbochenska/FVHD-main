@@ -1,4 +1,4 @@
-# 🧪 Testy eksperymentalne dla FVHD
+# Testy eksperymentalne dla FVHD
 
 W katalogu `tests/` znajdują się skrypty służące do oceny działania algorytmu **FVHD** oraz jego rozszerzonej wersji w różnych wariantach.
 
@@ -71,11 +71,3 @@ Dzięki temu embeddingi są lepiej dopasowane klasowo – punkty z tej samej ety
 - Wizualizacje są zapisywane jako: `results/<NazwaTestu>.png`
 
 ---
-
-
----
-
-## ▶️ Przykład uruchomienia
-
-```bash
-poetry run python tests/test_distilled.py
