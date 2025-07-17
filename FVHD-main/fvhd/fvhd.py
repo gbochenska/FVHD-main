@@ -5,6 +5,7 @@ from torch import Tensor
 from torch.optim import Optimizer
 
 from knn.graph import Graph
+import torch.nn.functional as F
 
 
 class FVHD:
@@ -206,12 +207,12 @@ class FVHD:
         nn_new = torch.cat(
             [NN.reshape(X.shape[0], self.nn, 1) for _ in range(self.n_components)],
             dim=-1
-        ).to(torch.long)  # ⬅ DODAJ TO
+        ).to(torch.long)  
 
         rn_new = torch.cat(
             [RN.reshape(X.shape[0], self.rn, 1) for _ in range(self.n_components)],
             dim=-1
-        ).to(torch.long)  # ⬅ DODAJ TO
+        ).to(torch.long)  
 
         self.x = self.init_pos.to(self.device) if self.init_pos is not None else torch.rand(
             (X.shape[0], 1, self.n_components), device=self.device)
@@ -312,3 +313,122 @@ class FVHD:
             torch.sum(f_rn, dim=1, keepdim=True),
         )
 
+class FVHDWithTransform(FVHD):
+    def __init__(
+        self,
+        n_components: int = 2,
+        nn: int = 5,
+        rn: int = 5,
+        c: float = 0.1,
+        optimizer: Optional[Type[Optimizer]] = None,
+        optimizer_kwargs: Dict[str, Any] = None,
+        epochs: int = 200,
+        eta: float = 0.1,
+        device: str = "cpu",
+        graph_file: str = "",
+        autoadapt: bool = False,
+        velocity_limit: bool = False,
+        verbose: bool = True,
+        mutual_neighbors_epochs: Optional[int] = None,
+        eta_schedule: str = "",
+        boost_start_eta: bool = True,
+        gaussian_weights: bool = False,
+        force_multiplier: float = 1.0,
+        plot_each: int = 100,
+        init_pos: Optional[torch.Tensor] = None,
+        supervised: bool = False,
+        lambda1: float = 1.0,
+        lambda2: float = 1.0,
+    ):
+        super().__init__(
+            n_components=n_components,
+            nn=nn,
+            rn=rn,
+            c=c,
+            optimizer=optimizer,
+            optimizer_kwargs=optimizer_kwargs,
+            epochs=epochs,
+            eta=eta,
+            device=device,
+            graph_file=graph_file,
+            autoadapt=autoadapt,
+            velocity_limit=velocity_limit,
+            verbose=verbose,
+            mutual_neighbors_epochs=mutual_neighbors_epochs,
+            eta_schedule=eta_schedule,
+            boost_start_eta=boost_start_eta,
+            gaussian_weights=gaussian_weights,
+            force_multiplier=force_multiplier,
+            plot_each=plot_each,
+            init_pos=init_pos,
+            supervised=supervised,
+            lambda1=lambda1,
+            lambda2=lambda2,
+        )
+
+        self.nn_indices = None
+        self.rn_indices = None
+        self.input_shape = None
+        self.graphs = None
+        self.labels = None
+
+
+    def fit(self, X: torch.Tensor, graphs: list, labels: Optional[np.ndarray] = None):
+        x = X.to(self.device)
+        graph = graphs[0]
+
+        nn = torch.tensor(graph.indexes[:, :self.nn].astype(np.int32)).to(self.device)
+        rn = torch.randint(0, x.shape[0], (x.shape[0], self.rn)).to(self.device)
+
+        self.nn_indices = nn
+        self.rn_indices = rn
+        self.input_shape = x.shape[0]
+        self.graphs = graphs
+        self.labels = labels
+
+        if self.optimizer is None:
+            self.x = self.force_directed_method(x, nn, rn, graphs, labels=torch.tensor(labels) if labels is not None else None)
+            self.x = torch.tensor(self.x, device=self.device).unsqueeze(1) 
+        else:
+            self.x = self.optimizer_method(x.shape[0], nn.reshape(-1), rn.reshape(-1))
+            self.x = self.x.to(self.device).unsqueeze(1)  
+
+
+    def transform(self, X: torch.Tensor) -> np.ndarray:
+        """
+        Alias dla project() – działa tylko, jeśli X to te same dane co w fit().
+        """
+        if self.x is None or self.input_shape != X.shape[0]:
+            raise ValueError(
+                "transform() is deprecated. Use .project(X_new, X_proto) for new data, "
+                "or .transform(X_proto) only if X is the training data."
+            )
+        
+        return self.project(X, X)
+
+    def project(self, X_new: torch.Tensor, X_proto: torch.Tensor, top_k: int = 2) -> np.ndarray:
+        """
+        Rzutuje nowe dane X_new do przestrzeni embeddingów, wyuczonych na X_proto.
+        Wykorzystuje średnie ważone embeddingi top_k najbliższych prototypów.
+        """
+        assert self.x is not None, "Model must be trained before projecting."
+        assert X_proto.shape[0] == self.x.shape[0], "Mismatch between X_proto and learned embeddings."
+
+        X_new = X_new.to(self.device)       
+        X_proto = X_proto.to(self.device)  
+        proto_embeds = self.x[:, 0]         
+
+        dists = torch.cdist(X_new, X_proto) + 1e-8
+
+        knn_dists, knn_indices = torch.topk(dists, top_k, dim=1, largest=False)  # [N_new, k]
+
+        # Embeddingi sąsiadów
+        neighbor_embeds = proto_embeds[knn_indices]  # [N_new, k, n_components]
+
+        # Wagi odwrotnie proporcjonalne do odległości
+        weights = 1.0 / knn_dists                    # [N_new, k]
+        weights = weights / weights.sum(dim=1, keepdim=True)
+
+        # Rzutowanie
+        projected = torch.sum(neighbor_embeds * weights.unsqueeze(-1), dim=1)  # [N_new, n_components]
+        return projected.cpu().numpy()

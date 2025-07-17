@@ -78,9 +78,7 @@ def run_variant_test(name, **kwargs):
         optimizer_kwargs={"lr": 0.1},
         epochs=2000,
         device="cpu",
-        velocity_limit=True,
         autoadapt=True,
-        mutual_neighbors_epochs=300,
         supervised=kwargs.get("supervised", True),
         lambda1=kwargs.get("l1", 1.0),
         lambda2=kwargs.get("l2", 1.0),
@@ -114,7 +112,7 @@ def run_variant_test(name, **kwargs):
         plt.text(x, y, str(idx), fontsize=12, color='red')  # numer klasy
 
     plt.legend()
-    plt.title(f"{DATASET_NAME} FVHD Embedding + Centroidy klas")
+    plt.title(f"{name} - Silhouette: {score:.4f} - Time: {elapsed_time:.2f}s")
     if not os.path.exists("results"):
         os.makedirs("results")
     filename_base = name.replace(" ", "_")
@@ -125,7 +123,7 @@ def run_variant_test(name, **kwargs):
         writer = csv.writer(file)
         writer.writerow([name, score, elapsed_time])
 
-    print(f"Test {name} completed. Silhouette Score: {score:.4f}, Time: {elapsed_time:.2f}s\n")
+    print(f"{DATASET_NAME} Test {name} completed. Silhouette Score: {score:.4f}, Time: {elapsed_time:.2f}s\n")
 
 # Prepare CSV header
 if not os.path.exists("results"):
