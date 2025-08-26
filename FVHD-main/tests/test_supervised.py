@@ -45,8 +45,8 @@ def load_dataset(name: str, n_samples: Optional[int] = None):
 
     from sklearn.decomposition import PCA
 
-    pca = PCA(n_components=50)
-    X = torch.tensor(pca.fit_transform(X), dtype=torch.float32)
+    # pca = PCA(n_components=50)
+    # X = torch.tensor(pca.fit_transform(X), dtype=torch.float32)
 
     Y = dataset.targets[:n_samples]
     return X, Y
@@ -70,18 +70,21 @@ def run_variant_test(name, **kwargs):
 
     fvhd = FVHD(
         n_components=2,
-        nn=5,
-        rn=2,
-        c=0.2,
-        eta=0.2,
-        optimizer=None,
-        optimizer_kwargs={"lr": 0.1},
-        epochs=2000,
+        nn=kwargs.get("nn", 5),
+        rn=kwargs.get("rn", 2),
+        c=kwargs.get("c", 0.2),
+        epochs=kwargs.get("epochs", 2000),
+        eta=kwargs.get("eta", 0.2),
         device="cpu",
-        autoadapt=True,
-        supervised=kwargs.get("supervised", True),
-        lambda1=kwargs.get("l1", 1.0),
-        lambda2=kwargs.get("l2", 1.0),
+        verbose=False,
+        mutual_neighbors_epochs=kwargs.get("mutual_neighbors_epochs", None),
+        boost_start_eta=kwargs.get("boost_start_eta", False),
+        gaussian_weights=kwargs.get("use_gaussian_weights", False),
+        eta_schedule=kwargs.get("eta_schedule", ""),
+        autoadapt=kwargs.get("autoadapt", False),
+        velocity_limit=kwargs.get("velocity_limit", False),
+        force_multiplier=kwargs.get("force_multiplier", 1.0),
+        supervised=kwargs.get("velocity_limit", False),
     )
 
     start_time = time.time()
@@ -98,7 +101,6 @@ def run_variant_test(name, **kwargs):
         points = embeddings[y == i]
         plt.scatter(points[:, 0], points[:, 1], label=f"{i}", marker=".", s=1, alpha=0.5)
     
-    # Dorysowanie centroidów
     unique_labels = np.unique(y)
     centroids = []
     for label in unique_labels:
@@ -107,15 +109,16 @@ def run_variant_test(name, **kwargs):
         centroids.append(centroid)
     centroids = np.vstack(centroids)
 
-    for idx, (x, y) in enumerate(centroids):  # centroidy w 2D
-        plt.scatter(x, y, marker='x', color='black', s=100)  # duży X na centroidzie
-        plt.text(x, y, str(idx), fontsize=12, color='red')  # numer klasy
+    for idx, (x, y) in enumerate(centroids):  
+        plt.scatter(x, y, marker='x', color='black', s=100) 
+        plt.text(x, y, str(idx), fontsize=12, color='red') 
 
     plt.legend()
     plt.title(f"{name} - Silhouette: {score:.4f} - Time: {elapsed_time:.2f}s")
     if not os.path.exists("results"):
         os.makedirs("results")
     filename_base = name.replace(" ", "_")
+    filename_base += DATASET_NAME
     plt.savefig(f"results/{filename_base}.png")
     plt.close()
 
@@ -125,7 +128,6 @@ def run_variant_test(name, **kwargs):
 
     print(f"{DATASET_NAME} Test {name} completed. Silhouette Score: {score:.4f}, Time: {elapsed_time:.2f}s\n")
 
-# Prepare CSV header
 if not os.path.exists("results"):
     os.makedirs("results")
 if not os.path.exists("results/summary.csv"):
@@ -135,11 +137,11 @@ if not os.path.exists("results/summary.csv"):
 
 
 variants = [
-    # {"name": "Supervised", "supervised": True},
-    # {"name": "Unsupervised", "supervised": False},
+    {"name": "Supervised", "supervised": True, },
+    # # {"name": "Unsupervised", "supervised": False},
     # {"name": "Supervised + l1 = 0.5 + l2 = 1.0", "supervised": True, "l1": 0.5},
     # {"name": "Supervised + l1 = 1.0 + l2 = 0.5", "supervised": True, "l2": 0.5},
-    # {"name": "Supervised + l1 = 0.5 + l2 = 0.5", "supervised": True, "l2": 0.5, "l1": 0.5},
+    {"name": "Supervised + l1 = 15 + l2 = 4", "supervised": True, "l2": 4, "l1": 15},
     {"name": "Supervised + l1 = 10.0 + l2 = 1.0", "supervised": True, "l1": 10.0},
     {"name": "Supervised + l1 = 1.0 + l2 = 10.0", "supervised": True, "l2": 10.0},
     {"name": "Supervised + l1 = 10.0 + l2 = 10.0", "supervised": True, "l2": 10.0, "l1": 10.0},

@@ -34,6 +34,7 @@ class FVHD:
         supervised: bool = False,
         lambda1: float = 1.0,
         lambda2: float = 1.0,
+        sigma_k = 2.0
     ) -> None:
         self.n_components = n_components
         self.nn = nn
@@ -45,9 +46,9 @@ class FVHD:
         self.eta = eta
         self.initial_eta = eta
         self.eta_schedule = eta_schedule
-        self.eta_decay_rate = 0.95
+        self.eta_decay_rate = 0.99
         self.eta_adaptive_threshold = 1e-3
-        self.eta_min = 1e-4
+        self.eta_min = 0.1 * self.eta
         self.a = 0.9
         self.b = 0.3
         self.device = device
@@ -55,6 +56,7 @@ class FVHD:
         self.graph_file = graph_file
         self._current_epoch = 0
         self._previous_delta_norm = 1e9
+        self.sigma_k = sigma_k
 
         self.autoadapt = autoadapt
         self.buffer_len = 10
@@ -156,21 +158,19 @@ class FVHD:
         if labels is None or not self.supervised:
             return torch.tensor(0.0), torch.tensor(0.0)
 
-        # — oblicz metryki —
         intra_loss, inter_loss = self.compute_supervised_loss(self.x[:, 0], labels.to(self.device))
 
-        # — przyciąganie + odpychanie —
         y    = labels.to(self.device)
         uniq = torch.unique(y)
-        centroids = torch.stack([self.x[y == lbl, 0].mean(dim=0) for lbl in uniq])  # (C,2)
+        centroids = torch.stack([self.x[y == lbl, 0].mean(dim=0) for lbl in uniq]) 
 
-        f_attr = centroids[y] - self.x[:, 0]                                        # (N,2)
+        f_attr = centroids[y] - self.x[:, 0]                                       
 
-        diff  = self.x[:, 0].unsqueeze(1) - centroids.unsqueeze(0)                  # (N,C,2)
+        diff  = self.x[:, 0].unsqueeze(1) - centroids.unsqueeze(0)                  
         dist2 = (diff * diff).sum(dim=-1, keepdim=True) + 1e-8
         mask  = (y.unsqueeze(1) != uniq.unsqueeze(0)).unsqueeze(-1)
         f_rep = (diff / dist2) * mask.float()
-        f_repel = f_rep.sum(dim=1)                                                  # (N,2)
+        f_repel = f_rep.sum(dim=1)                                                  
 
         step = self.eta * 0.05 * (self.lambda1 * f_attr + self.lambda2 * f_repel)
         with torch.no_grad():
@@ -258,7 +258,7 @@ class FVHD:
             mask = squared_velocity > self.max_velocity ** 2
             self.delta_x[mask] *= (self.max_velocity / velocity[mask]).reshape(-1, 1)
 
-        if self.eta_schedule == "decay":
+        if self.eta_schedule == "decay" and self._current_epoch > 700:
             self.eta = max(self.eta * self.eta_decay_rate, self.eta_min)
         elif self.eta_schedule == "adaptive":
             delta_norm = torch.norm(self.delta_x)
@@ -289,14 +289,16 @@ class FVHD:
         self.eta = max(self.eta, 0.01)
 
     def __compute_forces(self, rn_dist, nn_diffs, rn_diffs, nn_dist, NN_new, RN_new):
-        if self.gaussian_weights:
-            sigma = 2.0 * torch.mean(nn_dist)
+        if self.gaussian_weights and self._current_epoch > 500:
+            sigma = self.sigma_k * torch.mean(nn_dist)
             weights = torch.exp(- (nn_dist ** 2) / (sigma ** 2))
             weights = weights.view(nn_diffs.shape[0], nn_diffs.shape[1], 1)
             f_nn = weights * nn_diffs
         elif self.mutual_neighbors_epochs and self.epochs - self._current_epoch <= self.mutual_neighbors_epochs:
             nn_attraction = 1.0 / (nn_dist + 1e-8)
             f_nn = nn_attraction * nn_diffs
+            NN_new = NN_new.to(torch.int64)
+            RN_new = RN_new.to(torch.int64)
         else:
             f_nn = nn_diffs
 
@@ -420,15 +422,12 @@ class FVHDWithTransform(FVHD):
 
         dists = torch.cdist(X_new, X_proto) + 1e-8
 
-        knn_dists, knn_indices = torch.topk(dists, top_k, dim=1, largest=False)  # [N_new, k]
+        knn_dists, knn_indices = torch.topk(dists, top_k, dim=1, largest=False)
 
-        # Embeddingi sąsiadów
-        neighbor_embeds = proto_embeds[knn_indices]  # [N_new, k, n_components]
+        neighbor_embeds = proto_embeds[knn_indices]  
 
-        # Wagi odwrotnie proporcjonalne do odległości
-        weights = 1.0 / knn_dists                    # [N_new, k]
+        weights = 1.0 / knn_dists                  
         weights = weights / weights.sum(dim=1, keepdim=True)
 
-        # Rzutowanie
-        projected = torch.sum(neighbor_embeds * weights.unsqueeze(-1), dim=1)  # [N_new, n_components]
+        projected = torch.sum(neighbor_embeds * weights.unsqueeze(-1), dim=1)  
         return projected.cpu().numpy()

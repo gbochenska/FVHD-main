@@ -44,8 +44,8 @@ def load_dataset(name: str, n_samples: Optional[int] = None):
 
     from sklearn.decomposition import PCA
 
-    pca = PCA(n_components=50)
-    X = torch.tensor(pca.fit_transform(X), dtype=torch.float32)
+    #pca = PCA(n_components=50)
+    # X = torch.tensor(X, dtype=torch.float32)
 
     Y = dataset.targets[:n_samples]
     return X, Y
@@ -74,18 +74,19 @@ def run_variant_test(name, **kwargs):
         nn=kwargs.get("nn", 5),
         rn=kwargs.get("rn", 2),
         c=kwargs.get("c", 0.2),
-        epochs=kwargs.get("epochs", 1000),
+        epochs=kwargs.get("epochs", 2000),
         eta=kwargs.get("eta", 0.2),
         device="cpu",
         verbose=False,
         mutual_neighbors_epochs=kwargs.get("mutual_neighbors_epochs", None),
-        boost_start_eta=kwargs.get("boost_start_eta", True),
+        boost_start_eta=kwargs.get("boost_start_eta", False),
         gaussian_weights=kwargs.get("use_gaussian_weights", False),
         eta_schedule=kwargs.get("eta_schedule", ""),
         autoadapt=kwargs.get("autoadapt", False),
         velocity_limit=kwargs.get("velocity_limit", False),
         force_multiplier=kwargs.get("force_multiplier", 1.0),
-        plot_each=0
+        plot_each=0,
+        sigma_k = kwargs.get("sigma_k", 1.0)
     )
 
     start_time = time.time()
@@ -106,6 +107,7 @@ def run_variant_test(name, **kwargs):
     if not os.path.exists("results"):
         os.makedirs("results")
     filename_base = name.replace(" ", "_")
+    filename_base += DATASET_NAME
     plt.savefig(f"results/{filename_base}.png")
     plt.close()
 
@@ -129,21 +131,23 @@ if not os.path.exists("results/summary.csv"):
 
 # === Test scenarios ===
 variants = [
-    {"name": "Baseline"},
-    {"name": "With mutual neighbors", "mutual_neighbors_epochs": 50},
-    {"name": "With Gaussian weights", "use_gaussian_weights": True},
-    {"name": "Init by labels", "boost_start_eta": False},
-    {"name": "Decay eta", "eta_schedule": "decay"},
-    {"name": "Adaptive eta", "eta_schedule": "adaptive"},
-    {"name": "With autoadapt", "autoadapt": True},
+    # {"name": "Baseline"},
+    # {"name": "With mutual neighbors", "mutual_neighbors_epochs": 300},
+    {"name": "With Gaussian weights 20", "use_gaussian_weights": True, "sigma_k":20},
+    {"name": "With Gaussian weights 50", "use_gaussian_weights": True, "sigma_k":50},
+    {"name": "With Gaussian weights 100", "use_gaussian_weights": True, "sigma_k":100},
+    # {"name": "Init by labels", "boost_start_eta": False},
+    # {"name": "Decay eta", "eta_schedule": "decay"},
+    # {"name": "Adaptive eta", "eta_schedule": "adaptive"},
+#     {"name": "With autoadapt", "autoadapt": True},
     {"name": "Velocity limited", "velocity_limit": True},
-    {"name": "Strong repulsion", "c": 1.0},
-    {"name": "Weak repulsion", "c": 0.01},
-    {"name": "Mutual + Gaussian + Decay", "mutual_neighbors_epochs": 50, "use_gaussian_weights": True, "eta_schedule": "decay"},
-    {"name": "Init + Adaptive + Autoadapt", "boost_start_eta": False, "eta_schedule": "adaptive", "autoadapt": True},
+#     {"name": "Strong repulsion", "c": 1.0},
+#     {"name": "Weak repulsion", "c": 0.01},
+    {"name": "Gaussian + Decay", "use_gaussian_weights": True, "eta_schedule": "decay"},
+#     {"name": "Init + Adaptive + Autoadapt", "boost_start_eta": False, "eta_schedule": "adaptive", "autoadapt": True},
     {"name": "Gaussian + Velocity", "use_gaussian_weights": True, "velocity_limit": True},
-    {"name": "Mutual + Strong repulsion", "mutual_neighbors_epochs": 50, "c": 1.0},
-    {"name": "Weak repulsion + Adaptive + Autoadapt", "c": 0.01, "eta_schedule": "adaptive", "autoadapt": True}
+#     {"name": "Mutual + Strong repulsion", "mutual_neighbors_epochs": 50, "c": 1.0},
+#     {"name": "Weak repulsion + Adaptive + Autoadapt", "c": 0.01, "eta_schedule": "adaptive", "autoadapt": True}
 ]
 
 for variant in variants:
