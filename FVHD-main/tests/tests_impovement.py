@@ -52,7 +52,7 @@ def load_dataset(name: str, n_samples: Optional[int] = None):
 
 
 def create_or_load_graph(X: torch.Tensor, nn: int) -> tuple[Graph, Graph]:
-    config = NeighborConfig(metric="euclidean")
+    config = NeighborConfig(metric="cosine")
     df = pd.DataFrame(X.numpy())
     generator = NeighborGenerator(df=df, config=config)
     return generator.run(nn=nn)
@@ -64,7 +64,7 @@ def run_variant_test(name, **kwargs):
     print(f"\nRunning test: {name}")
     setup_ssl()
 
-    DATASET_NAME = "mnist"
+    DATASET_NAME = "fmnist"
 
     X, y = load_dataset(DATASET_NAME)
     graph, mutual_graph = create_or_load_graph(X, 5)
@@ -74,18 +74,18 @@ def run_variant_test(name, **kwargs):
         nn=kwargs.get("nn", 5),
         rn=kwargs.get("rn", 2),
         c=kwargs.get("c", 0.2),
-        epochs=kwargs.get("epochs", 2000),
-        eta=kwargs.get("eta", 0.2),
+        epochs=kwargs.get("epochs", 1000),
+        eta=kwargs.get("eta", 0.02),
         device="cpu",
         verbose=False,
         mutual_neighbors_epochs=kwargs.get("mutual_neighbors_epochs", None),
         boost_start_eta=kwargs.get("boost_start_eta", False),
-        gaussian_weights=kwargs.get("use_gaussian_weights", False),
+        gaussian_weights=kwargs.get("gaussian_weights", False),
         eta_schedule=kwargs.get("eta_schedule", ""),
         autoadapt=kwargs.get("autoadapt", False),
         velocity_limit=kwargs.get("velocity_limit", False),
         force_multiplier=kwargs.get("force_multiplier", 1.0),
-        plot_each=0,
+        plot_each=100,
         sigma_k = kwargs.get("sigma_k", 1.0)
     )
 
@@ -131,14 +131,16 @@ if not os.path.exists("results/summary.csv"):
 
 # === Test scenarios ===
 variants = [
-    # {"name": "Baseline"},
+    {"name": "Baseline FMNIST"},
+    # {"name": "With Gaussian weights 0.01", "use_gaussian_weights every": True, "sigma_k":0.01},
     # {"name": "With mutual neighbors", "mutual_neighbors_epochs": 300},
-    {"name": "With Gaussian weights 20", "use_gaussian_weights": True, "sigma_k":20},
-    {"name": "With Gaussian weights 50", "use_gaussian_weights": True, "sigma_k":50},
-    {"name": "With Gaussian weights 100", "use_gaussian_weights": True, "sigma_k":100},
+    # {"name": "With Gaussian weights 20", "gaussian_weights every": True, "sigma_k":20.0},
+    {"name": "With Gaussian weights 50", "gaussian_weights every": True, "sigma_k":50.0},
+    {"name": "With Gaussian weights 100", "gaussian_weights": True, "sigma_k":100.0},
+    {"name": "With Gaussian weights 1000", "gaussian_weights": True, "sigma_k":1000.0},
     # {"name": "Init by labels", "boost_start_eta": False},
-    # {"name": "Decay eta", "eta_schedule": "decay"},
-    # {"name": "Adaptive eta", "eta_schedule": "adaptive"},
+    {"name": "Decay eta", "eta_schedule": "decay"},
+    {"name": "Adaptive eta", "eta_schedule": "adaptive"},
 #     {"name": "With autoadapt", "autoadapt": True},
     {"name": "Velocity limited", "velocity_limit": True},
 #     {"name": "Strong repulsion", "c": 1.0},

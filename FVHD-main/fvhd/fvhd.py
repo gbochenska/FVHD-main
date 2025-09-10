@@ -32,8 +32,8 @@ class FVHD:
         plot_each: int = 100,
         init_pos: Optional[torch.Tensor] = None,
         supervised: bool = False,
-        lambda1: float = 1.0,
-        lambda2: float = 1.0,
+        lambda1: float = 10.0,
+        lambda2: float = 0.0,
         sigma_k = 2.0
     ) -> None:
         self.n_components = n_components
@@ -172,7 +172,7 @@ class FVHD:
         f_rep = (diff / dist2) * mask.float()
         f_repel = f_rep.sum(dim=1)                                                  
 
-        step = self.eta * 0.05 * (self.lambda1 * f_attr + self.lambda2 * f_repel)
+        step = self.eta * 0.05 * (10*self.lambda1 * f_attr + self.lambda2 * f_repel)
         with torch.no_grad():
             self.x[:, 0] += step
 
@@ -224,7 +224,7 @@ class FVHD:
             self._current_epoch = i
             
 
-            if self.supervised and labels is not None:
+            if self.supervised and labels is not None and self._current_epoch>1600:
                 intra_loss, inter_loss = self.apply_supervision(labels, log=(i % 100 == 0))
                 loss = self.lambda1 * intra_loss - self.lambda2 * inter_loss
             else:
@@ -289,7 +289,7 @@ class FVHD:
         self.eta = max(self.eta, 0.01)
 
     def __compute_forces(self, rn_dist, nn_diffs, rn_diffs, nn_dist, NN_new, RN_new):
-        if self.gaussian_weights and self._current_epoch > 500:
+        if self.gaussian_weights:
             sigma = self.sigma_k * torch.mean(nn_dist)
             weights = torch.exp(- (nn_dist ** 2) / (sigma ** 2))
             weights = weights.view(nn_diffs.shape[0], nn_diffs.shape[1], 1)
@@ -339,8 +339,11 @@ class FVHDWithTransform(FVHD):
         plot_each: int = 100,
         init_pos: Optional[torch.Tensor] = None,
         supervised: bool = False,
-        lambda1: float = 1.0,
-        lambda2: float = 1.0,
+        lambda1: float = 100.0,
+        lambda2: float = 0.0,
+        top_k: int = 10,
+        p:float = 1,
+        sigma_k = 2.0
     ):
         super().__init__(
             n_components=n_components,
@@ -366,6 +369,7 @@ class FVHDWithTransform(FVHD):
             supervised=supervised,
             lambda1=lambda1,
             lambda2=lambda2,
+            sigma_k=sigma_k
         )
 
         self.nn_indices = None
@@ -373,61 +377,100 @@ class FVHDWithTransform(FVHD):
         self.input_shape = None
         self.graphs = None
         self.labels = None
+        self.top_k = top_k
+        self.p = p
 
 
     def fit(self, X: torch.Tensor, graphs: list, labels: Optional[np.ndarray] = None):
         x = X.to(self.device)
         graph = graphs[0]
-
         nn = torch.tensor(graph.indexes[:, :self.nn].astype(np.int32)).to(self.device)
         rn = torch.randint(0, x.shape[0], (x.shape[0], self.rn)).to(self.device)
 
-        self.nn_indices = nn
-        self.rn_indices = rn
-        self.input_shape = x.shape[0]
-        self.graphs = graphs
-        self.labels = labels
+        nn = nn.reshape(-1)
+        rn = rn.reshape(-1)
 
         if self.optimizer is None:
-            self.x = self.force_directed_method(x, nn, rn, graphs, labels=torch.tensor(labels) if labels is not None else None)
-            self.x = torch.tensor(self.x, device=self.device).unsqueeze(1) 
-        else:
-            self.x = self.optimizer_method(x.shape[0], nn.reshape(-1), rn.reshape(-1))
-            self.x = self.x.to(self.device).unsqueeze(1)  
+            return self.force_directed_method(x, nn, rn, graphs, labels)
+        return self.optimizer_method(x.shape[0], nn, rn)
 
+    def _calculate_distances(self, indices):
+        flat_indices = indices.view(-1).to(torch.long)
+        selected = torch.index_select(self.x, 0, flat_indices)
+        diffs = self.x - selected.view(self.x.shape[0], -1, self.n_components)
+
+        dist2 = torch.sum(diffs * diffs, dim=-1, keepdim=True)
+        dist = torch.sqrt(torch.clamp(dist2, min=1e-16))
+        return diffs, dist
 
     def transform(self, X: torch.Tensor) -> np.ndarray:
-        """
-        Alias dla project() – działa tylko, jeśli X to te same dane co w fit().
-        """
-        if self.x is None or self.input_shape != X.shape[0]:
-            raise ValueError(
-                "transform() is deprecated. Use .project(X_new, X_proto) for new data, "
-                "or .transform(X_proto) only if X is the training data."
-            )
-        
         return self.project(X, X)
 
-    def project(self, X_new: torch.Tensor, X_proto: torch.Tensor, top_k: int = 2) -> np.ndarray:
+    def project(self, X_new: torch.Tensor, X_proto: torch.Tensor) -> np.ndarray:
         """
-        Rzutuje nowe dane X_new do przestrzeni embeddingów, wyuczonych na X_proto.
-        Wykorzystuje średnie ważone embeddingi top_k najbliższych prototypów.
+        Projekcja z wyrównaniem skali (PCA->whitening na prototypach),
+        lokalnym skalowaniem odległości i korekcją hubness (CSLS).
         """
         assert self.x is not None, "Model must be trained before projecting."
         assert X_proto.shape[0] == self.x.shape[0], "Mismatch between X_proto and learned embeddings."
 
-        X_new = X_new.to(self.device)       
-        X_proto = X_proto.to(self.device)  
-        proto_embeds = self.x[:, 0]         
+        device = self.device
+        Xn = X_new.to(device)
+        Xp_raw = X_proto.to(device)
+        proto_embeds = self.x[:, 0]  # [N_proto, 2]
 
-        dists = torch.cdist(X_new, X_proto) + 1e-8
+        # ---- 1) Wspólna przestrzeń: PCA->50 + whitening liczone na PROTOTYPACH ----
+        # (a) centrowanie po prototypach
+        mu = Xp_raw.mean(dim=0, keepdim=True)
+        Xp_c = Xp_raw - mu
+        Xn_c = Xn     - mu
 
-        knn_dists, knn_indices = torch.topk(dists, top_k, dim=1, largest=False)
+        # (b) SVD: rzut do r=min(50, D), whitening po S
+        U, S, Vt = torch.linalg.svd(Xp_c, full_matrices=False)  # Xp_c ≈ U @ diag(S) @ Vt
+        r = int(min(50, Vt.shape[0]))
+        W = Vt[:r].T                      # [D, r]
+        S_r = S[:r].unsqueeze(0) + 1e-6   # [1, r] (stabilizacja)
 
-        neighbor_embeds = proto_embeds[knn_indices]  
+        Xp = (Xp_c @ W) / S_r             # [N_proto, r]
+        Xn = (Xn_c @ W) / S_r             # [N_new,   r]
 
-        weights = 1.0 / knn_dists                  
-        weights = weights / weights.sum(dim=1, keepdim=True)
+        # ---- 2) Odległości + kNN ----
+        d = torch.cdist(Xn, Xp) + 1e-12
+        K = int(self.top_k)
+        K = min(K, Xp.shape[0])           # bezpieczeństwo gdy mało prototypów
+        knn_d, knn_idx = torch.topk(d, K, dim=1, largest=False)
+        neigh_emb = proto_embeds[knn_idx]  # [N_new, K, 2]
 
-        projected = torch.sum(neighbor_embeds * weights.unsqueeze(-1), dim=1)  
-        return projected.cpu().numpy()
+        # ---- 3) Wagi: softmax z lokalną skalą + 1/d^p (miks) ----
+        # local scaling (Zelnik–Manor): sigma_i = dystans do K-tego sąsiada
+        sigma = knn_d[:, -1].unsqueeze(1) + 1e-12
+        tau = 1.0
+        soft = torch.softmax(- (knn_d / sigma) ** 2 / (2 * (tau ** 2)), dim=1)
+
+        inv = (1.0 / knn_d) ** max(float(self.p), 1e-6)
+        inv = inv / inv.sum(dim=1, keepdim=True)
+
+        w = 0.5 * soft + 0.5 * inv
+        w = w / w.sum(dim=1, keepdim=True)
+
+        # ---- 4) Hubness correction (CSLS-like) ----
+        # średni dystans do najbliższych K' po stronie "new"
+        k_csls = min(10, K)
+        r_new = knn_d[:, :k_csls].mean(dim=1, keepdim=True)  # [N_new, 1]
+
+        # średni dystans do najbliższych K' po stronie "proto"
+        dT = d.transpose(0, 1)                               # [N_proto, N_new]
+        r_proto = torch.topk(dT, k_csls, dim=1, largest=False).values.mean(dim=1)  # [N_proto]
+        csls = knn_d - 0.5 * (r_new + r_proto[knn_idx])      # [N_new, K]
+        csls = torch.clamp(csls, min=0.0) + 1e-12
+
+        inv_csls = (1.0 / csls) ** max(float(self.p), 1e-6)
+        inv_csls = inv_csls / inv_csls.sum(dim=1, keepdim=True)
+
+        # miks pierwotnych wag z CSLS
+        w = 0.5 * w + 0.5 * inv_csls
+        w = w / w.sum(dim=1, keepdim=True)
+
+        # ---- 5) Barycentryczna projekcja ----
+        proj = torch.sum(neigh_emb * w.unsqueeze(-1), dim=1)  # [N_new, 2]
+        return proj.detach().cpu().numpy()

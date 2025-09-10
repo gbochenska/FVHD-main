@@ -63,7 +63,7 @@ def run_variant_test(name, **kwargs):
     print(f"\nRunning test: {name}")
     setup_ssl()
 
-    DATASET_NAME = "mnist"
+    DATASET_NAME = "fmnist"
 
     X, y = load_dataset(DATASET_NAME)
     graph, mutual_graph = create_or_load_graph(X, 5)
@@ -73,8 +73,8 @@ def run_variant_test(name, **kwargs):
         nn=kwargs.get("nn", 5),
         rn=kwargs.get("rn", 2),
         c=kwargs.get("c", 0.2),
-        epochs=kwargs.get("epochs", 2000),
-        eta=kwargs.get("eta", 0.2),
+        epochs=kwargs.get("epochs", 1000),
+        eta=kwargs.get("eta", 0.02),
         device="cpu",
         verbose=False,
         mutual_neighbors_epochs=kwargs.get("mutual_neighbors_epochs", None),
@@ -84,8 +84,13 @@ def run_variant_test(name, **kwargs):
         autoadapt=kwargs.get("autoadapt", False),
         velocity_limit=kwargs.get("velocity_limit", False),
         force_multiplier=kwargs.get("force_multiplier", 1.0),
-        supervised=kwargs.get("velocity_limit", False),
+        supervised=kwargs.get("supervised", False),
+        lambda1=kwargs.get("l1", 0.0),
+        lambda2=kwargs.get("l2", 0.0),
+        plot_each=100
+
     )
+    print("Supervised", fvhd.supervised)
 
     start_time = time.time()
     embeddings = fvhd.fit_transform(X, [graph, mutual_graph], labels=y)
@@ -119,7 +124,7 @@ def run_variant_test(name, **kwargs):
         os.makedirs("results")
     filename_base = name.replace(" ", "_")
     filename_base += DATASET_NAME
-    plt.savefig(f"results/{filename_base}.png")
+    plt.savefig(f"results/{filename_base}{DATASET_NAME}.png")
     plt.close()
 
     with open("results/summary.csv", mode='a', newline='') as file:
@@ -137,14 +142,19 @@ if not os.path.exists("results/summary.csv"):
 
 
 variants = [
-    {"name": "Supervised", "supervised": True, },
-    # # {"name": "Unsupervised", "supervised": False},
-    # {"name": "Supervised + l1 = 0.5 + l2 = 1.0", "supervised": True, "l1": 0.5},
-    # {"name": "Supervised + l1 = 1.0 + l2 = 0.5", "supervised": True, "l2": 0.5},
-    {"name": "Supervised + l1 = 15 + l2 = 4", "supervised": True, "l2": 4, "l1": 15},
-    {"name": "Supervised + l1 = 10.0 + l2 = 1.0", "supervised": True, "l1": 10.0},
+    # {"name": "Supervised 500 last", "supervised": True, },
+    # {"name": "Unsupervised", "supervised": False},
+    {"name": "Supervised + l1 = 0.5 + l2 = 1.0", "supervised": True, "l1": 0.5, "l2":1.0},
+    {"name": "Supervised + l1 = 1.0 + l2 = 0.5", "supervised": True, "l2": 0.5, "l1":1.0},
+    {"name": "Supervised + l1 = 0.01 + l2 = 0.01", "supervised": True, "l2": 0.01, "l1": 0.01},
+    {"name": "Supervised + l1 = 0.1 + l2 = 0.1", "supervised": True, "l1": 0.1, "l2": 0.1},
     {"name": "Supervised + l1 = 1.0 + l2 = 10.0", "supervised": True, "l2": 10.0},
+    {"name": "Supervised + l1 = 70.0 + l2 = 6.0", "supervised": True, "l2": 6.0, "l1": 70.0},
     {"name": "Supervised + l1 = 10.0 + l2 = 10.0", "supervised": True, "l2": 10.0, "l1": 10.0},
+    {"name": "Supervised + l1 = 0.05 + l2 = 9.1", "supervised": True, "l2": 9.1, "l1": 0.05},
+    {"name": "Supervised + l1 = 10.0", "supervised": True, "l1": 10.0},
+    {"name": "Supervised + l1 = 10.0 + l2 = 1.0", "supervised": True, "l1": 10.0, "l2": 1.0},
+    {"name": "Supervised + l1 = 0.05 + l2 = 9.1", "supervised": True, "l1": 70.0, "l2": 10.0},
     ]
 
 for variant in variants:
